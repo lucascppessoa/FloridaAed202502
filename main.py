@@ -54,14 +54,14 @@ def _compute_shift_hours(days: int) -> List[int]:
     return [6, 6, 12] * days
 
 
-def _aligned_week_windows(s: int) -> List[Tuple[int, int]]:
+def _aligned_week_windows(shifts: int) -> List[Tuple[int, int]]:
     """Aligned weekly windows (21 shifts), last one may be partial.
     Alignment: week boundary at shift index multiples of 21 starting at 0.
     Returns list of (start, end) indices, end exclusive."""
     windows = []
     start = 0
-    while start < s:
-        end = min(s, start + 21)
+    while start < shifts:
+        end = min(shifts, start + 21)
         windows.append((start, end))
         start += 21
     return windows
@@ -220,7 +220,6 @@ def solve_max_covered_shifts(
     time_limit: Optional[float] = 60.0,
     num_search_workers: Optional[int] = None,
     add_symmetry_breaking: bool = True,
-    availability_by_skill: Optional[Dict[str, List[List[bool]]]] = None,
     use_tiebreak_fill_positions: bool = True,
 ) -> Dict[str, Any]:
     """
@@ -238,7 +237,6 @@ def solve_max_covered_shifts(
       time_limit: CP-SAT time limit in seconds.
       num_search_workers: CP-SAT parallel workers.
       add_symmetry_breaking: z[i] >= z[i+1] per skill (light symmetry breaking).
-      availability_by_skill: optional masks; skill -> [workers] -> [bool per shift].
       use_tiebreak_fill_positions: tie-break objective prefers more filled slots after maximizing shifts.
 
     Returns:
@@ -260,13 +258,13 @@ def solve_max_covered_shifts(
     """
 
     # Shifts and demands (with MOTO weekend rule)
-    S = days * 3
+    shifts = days * 3
     shift_hours = _compute_shift_hours(days)
     demand_by_shift = _build_shift_skill_demands(
         days, teams_per_day_shift, teams_per_night_shift
     )
-    windows = _aligned_week_windows(S)
-    weeks = math.ceil(S / 21)
+    windows = _aligned_week_windows(shifts)
+    weeks = math.ceil(shifts / 21)
 
     # A summary of day/night demands considering the weekend rule
     # Day (weekday): team mix as provided
@@ -299,7 +297,7 @@ def solve_max_covered_shifts(
     }
 
     # Total positions demanded (across all skills/shifts)
-    total_positions_demand = sum(sum(demand_by_shift[s].get(skill, 0) for skill in SKILLS) for s in range(S))
+    total_positions_demand = sum(sum(demand_by_shift[s].get(skill, 0) for skill in SKILLS) for s in range(shifts))
 
     # Group workers by skill and collect capacities
     workers_by_skill: Dict[str, List[int]] = {skill: [] for skill in SKILLS}
@@ -339,32 +337,25 @@ def solve_max_covered_shifts(
             # Tight Big-M for horizon hours: weeks * effective cap of this worker
             M_i = weeks * eff_cap_by_skill[skill][i] if weeks > 0 else 0
             hours_var[(skill, i)] = model.NewIntVar(0, M_i, f"h_{skill}_{i}")
-            for s in range(S):
-                y[(skill, i, s)] = model.NewBoolVar(f"y_{skill}_{i}_{s}")
-                # Availability hook
-                if availability_by_skill is not None:
-                    avail_skill = availability_by_skill.get(skill)
-                    if avail_skill is not None:
-                        if i < len(avail_skill) and s < len(avail_skill[i]):
-                            if not avail_skill[i][s]:
-                                model.Add(y[(skill, i, s)] == 0)
+            for shift in range(shifts):
+                y[(skill, i, shift)] = model.NewBoolVar(f"y_{skill}_{i}_{shift}")
                 # Link y <= z
-                model.Add(y[(skill, i, s)] <= z[(skill, i)])
+                model.Add(y[(skill, i, shift)] <= z[(skill, i)])
 
             # Total hours accumulation
-            model.Add(hours_var[(skill, i)] == sum(y[(skill, i, s)] * shift_hours[s] for s in range(S)))
+            model.Add(hours_var[(skill, i)] == sum(y[(skill, i, shift)] * shift_hours[shift] for shift in range(shifts)))
 
             # z <= sum_s y (plus y <= z already added)
-            model.Add(z[(skill, i)] <= sum(y[(skill, i, s)] for s in range(S)))
+            model.Add(z[(skill, i)] <= sum(y[(skill, i, shift)] for shift in range(shifts)))
 
             # No 3 consecutive shifts (rest 6h after 18h)
-            for s in range(S - 2):
-                model.Add(y[(skill, i, s)] + y[(skill, i, s + 1)] + y[(skill, i, s + 2)] <= 2)
+            for shift in range(shifts - 2):
+                model.Add(y[(skill, i, shift)] + y[(skill, i, shift + 1)] + y[(skill, i, shift + 2)] <= 2)
 
             # Weekly soft cap per aligned week window
             for (start, end) in windows:
                 model.Add(
-                    sum(y[(skill, i, s)] * shift_hours[s] for s in range(start, end))
+                    sum(y[(skill, i, shift)] * shift_hours[shift] for shift in range(start, end))
                     <= weekly_soft_cap_nom_by_skill[skill][i]
                 )
 
@@ -374,30 +365,30 @@ def solve_max_covered_shifts(
                     start = windows[w][0]
                     end = windows[w + rolling_weeks_for_soft - 1][1]
                     model.Add(
-                        sum(y[(skill, i, s)] * shift_hours[s] for s in range(start, end))
+                        sum(y[(skill, i, shift)] * shift_hours[shift] for shift in range(start, end))
                         <= rolling_cap_nom_by_skill[skill][i]
                     )
 
     # Coverage constraints per shift and skill: do not exceed demand
-    for s in range(S):
+    for shift in range(shifts):
         for skill in SKILLS:
-            demand = demand_by_shift[s].get(skill, 0)
+            demand = demand_by_shift[shift].get(skill, 0)
             if demand == 0:
                 for i in range(workforce_count_by_skill[skill]):
-                    model.Add(y[(skill, i, s)] == 0)
+                    model.Add(y[(skill, i, shift)] == 0)
             else:
-                model.Add(sum(y[(skill, i, s)] for i in range(workforce_count_by_skill[skill])) <= demand)
+                model.Add(sum(y[(skill, i, shift)] for i in range(workforce_count_by_skill[skill])) <= demand)
 
     # Shift fully covered indicator via skill demands:
     # c[s] = 1 -> for all skills with positive demand: sum y == demand (via >= and <= together)
-    for s in range(S):
-        c_s = model.NewBoolVar(f"c_{s}")
+    for shift in range(shifts):
+        c_s = model.NewBoolVar(f"c_{shift}")
         c.append(c_s)
         for skill in SKILLS:
-            demand = demand_by_shift[s].get(skill, 0)
+            demand = demand_by_shift[shift].get(skill, 0)
             if demand > 0:
                 model.Add(
-                    sum(y[(skill, i, s)] for i in range(workforce_count_by_skill[skill]))
+                    sum(y[(skill, i, shift)] for i in range(workforce_count_by_skill[skill]))
                     >= demand * c_s
                 )
 
@@ -410,17 +401,17 @@ def solve_max_covered_shifts(
 
     # Objective: maximize number of fully covered shifts (c),
     # tie-break: maximize filled positions (sum y without exceeding demands).
-    total_positions_demand = sum(sum(demand_by_shift[s].get(skill, 0) for skill in SKILLS) for s in range(S))
+    total_positions_demand = sum(sum(demand_by_shift[shift].get(skill, 0) for skill in SKILLS) for shift in range(shifts))
     if use_tiebreak_fill_positions:
         big_W = total_positions_demand + 1  # ensures 1 more full shift dominates any change in filled slots
         model.Maximize(
-            big_W * sum(c[s] for s in range(S)) +
+            big_W * sum(c[shift] for shift in range(shifts)) +
             sum(y[(skill, i, s)] for skill in SKILLS
                 for i in range(workforce_count_by_skill[skill])
-                for s in range(S))
+                for s in range(shifts))
         )
     else:
-        model.Maximize(sum(c[s] for s in range(S)))
+        model.Maximize(sum(c[shift] for shift in range(shifts)))
 
     # Solve
     solver = cp_model.CpSolver()
@@ -443,21 +434,21 @@ def solve_max_covered_shifts(
     # Extract results: fully covered shifts
     shifts_fully_covered = 0
     c_by_shift = []
-    for s in range(S):
-        val = int(round(solver.Value(c[s])))
+    for shift in range(shifts):
+        val = int(round(solver.Value(c[shift])))
         c_by_shift.append(val)
         if val == 1:
             shifts_fully_covered += 1
-    shifts_total = S
+    shifts_total = shifts
     coverage_fraction = (shifts_fully_covered / shifts_total) if shifts_total > 0 else 0.0
 
     # Filled positions (for info/tie-break reporting)
     filled_positions_total = 0
     if status in ("OPTIMAL", "FEASIBLE"):
-        for s in range(S):
+        for shift in range(shifts):
             for skill in SKILLS:
                 filled_positions_total += sum(
-                    int(solver.Value(y[(skill, i, s)]))
+                    int(solver.Value(y[(skill, i, shift)]))
                     for i in range(workforce_count_by_skill[skill])
                 )
     filled_positions_fraction = (filled_positions_total / total_positions_demand) if total_positions_demand > 0 else 0.0
@@ -484,13 +475,15 @@ def solve_max_covered_shifts(
     team_slots_total = 0
     teams_covered_total = 0
 
-    for s in range(S):
-        is_night = (s % 3 == 2)
-        day_idx = s // 3
+    for shift in range(shifts):
+        is_night = (shift % 3 == 2)
+        day_idx = shift // 3
         # Assigned skill counts in this shift
-        assigned_counts = {skill: 0 for skill in SKILLS}
-        for skill in SKILLS:
-            assigned_counts[skill] = sum(int(solver.Value(y[(skill, i, s)])) for i in range(workforce_count_by_skill[skill]))
+        assigned_counts = {skill: sum(int(solver.Value(y[(skill, i, shift)])) for i in range(workforce_count_by_skill[skill])) for skill in SKILLS}
+
+
+        # for skill in SKILLS:
+        #     assigned_counts[skill] = sum(int(solver.Value(y[(skill, i, shift)])) for i in range(workforce_count_by_skill[skill]))
 
         # Team supply for this shift (apply MOTO weekend rule)
         if is_night:
@@ -527,7 +520,7 @@ def solve_max_covered_shifts(
 
         team_coverage_by_shift.append(
             {
-                "shift": s,
+                "shift": shift,
                 "shift_type": "night" if is_night else "day",
                 "day_index": day_idx,
                 "day_of_week": _dow_name(day_idx),
@@ -566,20 +559,20 @@ def solve_max_covered_shifts(
     if include_assignments and status in ("OPTIMAL", "FEASIBLE"):
         # Detailed assignment dump
         by_shift = []
-        for s in range(S):
+        for shift in range(shifts):
             skill_to_workers = {}
             for skill in SKILLS:
                 assigned = []
                 for i in range(workforce_count_by_skill[skill]):
-                    if solver.Value(y[(skill, i, s)]) > 0.5:
+                    if solver.Value(y[(skill, i, shift)]) > 0.5:
                         assigned.append(i)
                 skill_to_workers[skill] = assigned
             by_shift.append({
-                "shift": s,
-                "hours": shift_hours[s],
-                "fully_covered": int(solver.Value(c[s])),
-                "teams_covered": team_coverage_by_shift[s]["covered"],
-                "team_slots": team_coverage_by_shift[s]["slots"],
+                "shift": shift,
+                "hours": shift_hours[shift],
+                "fully_covered": int(solver.Value(c[shift])),
+                "teams_covered": team_coverage_by_shift[shift]["covered"],
+                "team_slots": team_coverage_by_shift[shift]["slots"],
                 "skill_to_workers": skill_to_workers
             })
         summary["assignments"] = {
@@ -649,12 +642,11 @@ if __name__ == "__main__":
     demo_workers += [("D", 40)] * 85
 
     result = solve_max_covered_shifts(
+        days=15,
         worker_list=demo_workers,
         include_assignments=False,
         time_limit=300.0,
         num_search_workers=12,
-        add_symmetry_breaking=True,
-        use_tiebreak_fill_positions=True,
     )
     _print_summary(result)
     # pprint.pprint(result)
