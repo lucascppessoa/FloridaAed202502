@@ -236,7 +236,6 @@ def solve_max_covered_shifts(
       include_assignments: return full assignment details when True.
       time_limit: CP-SAT time limit in seconds.
       num_search_workers: CP-SAT parallel workers.
-      add_symmetry_breaking: z[i] >= z[i+1] per skill (light symmetry breaking).
       use_tiebreak_fill_positions: tie-break objective prefers more filled slots after maximizing shifts.
 
     Returns:
@@ -251,7 +250,7 @@ def solve_max_covered_shifts(
         - teams_covered_total, team_slots_total, teams_covered_fraction
         - teams_covered_by_type, team_slots_by_type_total
         - filled_positions_total, filled_positions_fraction
-        - workers_used_by_skill, hours_stats_by_skill
+        - workers_used_by_skill
         - c_by_shift (list)
         - team_coverage_by_shift (list of dicts per shift with covered and slots)
         - assignments (optional detailed fields)
@@ -325,7 +324,6 @@ def solve_max_covered_shifts(
 
     # Decision variables
     y = {}         # (skill, i, s) -> BoolVar: assign worker i (skill) to shift s
-    z = {}         # (skill, i) -> BoolVar: worker used at least once (OR of y's)
     hours_var = {} # (skill, i) -> IntVar: total hours across horizon
     c = []         # per-shift "fully covered" indicator
 
@@ -333,20 +331,14 @@ def solve_max_covered_shifts(
     for skill in SKILLS:
         n = workforce_count_by_skill[skill]
         for i in range(n):
-            z[(skill, i)] = model.NewBoolVar(f"z_{skill}_{i}")
             # Tight Big-M for horizon hours: weeks * effective cap of this worker
             M_i = weeks * eff_cap_by_skill[skill][i] if weeks > 0 else 0
             hours_var[(skill, i)] = model.NewIntVar(0, M_i, f"h_{skill}_{i}")
             for shift in range(shifts):
                 y[(skill, i, shift)] = model.NewBoolVar(f"y_{skill}_{i}_{shift}")
-                # Link y <= z
-                model.Add(y[(skill, i, shift)] <= z[(skill, i)])
 
             # Total hours accumulation
             model.Add(hours_var[(skill, i)] == sum(y[(skill, i, shift)] * shift_hours[shift] for shift in range(shifts)))
-
-            # z <= sum_s y (plus y <= z already added)
-            model.Add(z[(skill, i)] <= sum(y[(skill, i, shift)] for shift in range(shifts)))
 
             # No 3 consecutive shifts (rest 6h after 18h)
             for shift in range(shifts - 2):
@@ -392,12 +384,6 @@ def solve_max_covered_shifts(
                     >= demand * c_s
                 )
 
-    # Optional symmetry breaking: prefer lower-index workers within each skill
-    if add_symmetry_breaking:
-        for skill in SKILLS:
-            n = workforce_count_by_skill[skill]
-            for i in range(n - 1):
-                model.Add(z[(skill, i)] >= z[(skill, i + 1)])
 
     # Objective: maximize number of fully covered shifts (c),
     # tie-break: maximize filled positions (sum y without exceeding demands).
@@ -455,18 +441,6 @@ def solve_max_covered_shifts(
 
     # Used workers and hours stats
     workers_used_by_skill: Dict[str, int] = {}
-    hours_stats_by_skill: Dict[str, Dict[str, int]] = {}
-    for skill in SKILLS:
-        n = workforce_count_by_skill[skill]
-        used_ids = [i for i in range(n) if solver.Value(z[(skill, i)]) > 0.5]
-        workers_used_by_skill[skill] = len(used_ids)
-        if used_ids:
-            hours_used = [int(solver.Value(hours_var[(skill, i)])) for i in used_ids]
-            h_min = min(hours_used)
-            h_max = max(hours_used)
-            hours_stats_by_skill[skill] = {"min": h_min, "max": h_max, "spread": h_max - h_min}
-        else:
-            hours_stats_by_skill[skill] = {"min": 0, "max": 0, "spread": 0}
 
     # Granular team coverage accounting (post-solve from assigned skills)
     team_coverage_by_shift: List[Dict[str, Any]] = []
@@ -551,7 +525,6 @@ def solve_max_covered_shifts(
         "filled_positions_total": filled_positions_total,
         "filled_positions_fraction": filled_positions_fraction,
         "workers_used_by_skill": workers_used_by_skill,
-        "hours_stats_by_skill": hours_stats_by_skill,
         "c_by_shift": c_by_shift,
         "team_coverage_by_shift": team_coverage_by_shift,
     }
@@ -606,12 +579,6 @@ def _print_summary(summary: Dict[str, Any]) -> None:
         print(f"  {t}: {covered} / {slots} ({pct:.1%})")
     print(f"Filled positions: {summary['filled_positions_total']} / {summary['total_positions_demand']} "
           f"({summary['filled_positions_fraction']:.1%})")
-    print("Workers used by skill:")
-    for skill, n in summary["workers_used_by_skill"].items():
-        print(f"  {skill}: {n}")
-    print("Hours stats among used workers by skill (min, max, spread):")
-    for skill, st in summary["hours_stats_by_skill"].items():
-        print(f"  {skill}: {st}")
 
 
 if __name__ == "__main__":
@@ -642,7 +609,7 @@ if __name__ == "__main__":
     demo_workers += [("D", 40)] * 85
 
     result = solve_max_covered_shifts(
-        days=15,
+        days=30,
         worker_list=demo_workers,
         include_assignments=False,
         time_limit=300.0,
