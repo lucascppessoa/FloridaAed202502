@@ -219,7 +219,6 @@ def solve_max_covered_shifts(
     include_assignments: bool = False,
     time_limit: Optional[float] = 60.0,
     num_search_workers: Optional[int] = None,
-    add_symmetry_breaking: bool = True,
     use_tiebreak_fill_positions: bool = True,
 ) -> Dict[str, Any]:
     """
@@ -454,10 +453,6 @@ def solve_max_covered_shifts(
         day_idx = shift // 3
         # Assigned skill counts in this shift
         assigned_counts = {skill: sum(int(solver.Value(y[(skill, i, shift)])) for i in range(workforce_count_by_skill[skill])) for skill in SKILLS}
-
-
-        # for skill in SKILLS:
-        #     assigned_counts[skill] = sum(int(solver.Value(y[(skill, i, shift)])) for i in range(workforce_count_by_skill[skill]))
 
         # Team supply for this shift (apply MOTO weekend rule)
         if is_night:
