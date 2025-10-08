@@ -65,6 +65,8 @@ def solve_max_covered_shifts(
     # Weekly flexibility:
     weekly_soft_overage: int = 2,  # e.g., +10% per week: 44 when cap=40
     rolling_weeks_for_soft: int = 4,    # total over any K aligned weeks <= K * cap (e.g., 160 for K=4)
+    # Balance constraint:
+    max_shift_imbalance: Optional[int] = None,  # max difference in met demand between any two shifts
     # Solve options:
     time_limit: Optional[float] = 60.0,
     num_search_workers: Optional[int] = None,
@@ -81,7 +83,7 @@ def solve_max_covered_shifts(
       teams_per_night_shift: team counts for night shifts (default fixed EMS mix).
       weekly_soft_overage: per-week overage allowed (e.g., 2 allows 42 when cap=40).
       rolling_weeks_for_soft: rolling aligned K-week window cap K * personal_weekly_cap.
-      include_assignments: return full assignment details when True.
+      max_shift_imbalance: maximum allowed difference in met demand between any two shifts (None to disable).
       time_limit: CP-SAT time limit in seconds.
       num_search_workers: CP-SAT parallel workers.
       use_tiebreak_fill_positions: tie-break objective prefers more filled slots after maximizing shifts.
@@ -216,6 +218,34 @@ def solve_max_covered_shifts(
                     >= demand * c_s
                 )
 
+    # Balance constraint: limit difference in met demand between shifts
+    if max_shift_imbalance is not None:
+        # Calculate total demand per shift (for upper bound)
+        max_demand_per_shift = max(sum(demand_by_shift[s].get(skill, 0) for skill in SKILLS) for s in range(shifts))
+        
+        # Create variables for met demand per shift
+        met_demand = []
+        for shift in range(shifts):
+            met_demand_s = model.NewIntVar(0, max_demand_per_shift, f"met_demand_{shift}")
+            model.Add(
+                met_demand_s == sum(
+                    y[(skill, i, shift)]
+                    for skill in SKILLS
+                    for i in range(workforce_count_by_skill[skill])
+                )
+            )
+            met_demand.append(met_demand_s)
+        
+        # Create min and max met demand variables
+        min_met_demand = model.NewIntVar(0, max_demand_per_shift, "min_met_demand")
+        max_met_demand = model.NewIntVar(0, max_demand_per_shift, "max_met_demand")
+        
+        # Constrain min and max
+        model.AddMinEquality(min_met_demand, met_demand)
+        model.AddMaxEquality(max_met_demand, met_demand)
+        
+        # Enforce balance constraint: max - min <= max_shift_imbalance
+        model.Add(max_met_demand - min_met_demand <= max_shift_imbalance)
 
     # Objective: maximize number of fully covered shifts (c),
     # tie-break: maximize filled positions (sum y without exceeding demands).
@@ -284,6 +314,7 @@ if __name__ == "__main__":
         weekly_soft_overage=weekly_soft_overage,
         rolling_weeks_for_soft=rolling_weeks_for_soft,
         worker_list=demo_workers,
+        max_shift_imbalance=10,  # Max difference of 10 workers between any two shifts
         time_limit=300.0,
         num_search_workers=12,
     )
