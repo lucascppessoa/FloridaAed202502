@@ -71,7 +71,7 @@ if __name__ == "__main__":
     demo_workers += [("D", 30)] * 3
     demo_workers += [("D", 40)] * 85
 
-    solver, workforce_count_by_skill, total_positions_demand, c, y = solve_max_covered_shifts(
+    solver, workforce_count_by_skill, total_positions_demand, full_coverage, workers_assigned = solve_max_covered_shifts(
         teams_per_day_shift=teams_per_day_shift,
         teams_per_night_shift=teams_per_night_shift,
         days=days,
@@ -90,7 +90,7 @@ if __name__ == "__main__":
                                 days,
                                 weekly_soft_overage,
                                 rolling_weeks_for_soft,
-                                c,
-                                y)
+                                full_coverage,
+                                workers_assigned)
     print_summary(summary)
     # pprint.pprint(result)
