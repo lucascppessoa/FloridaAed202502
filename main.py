@@ -91,6 +91,7 @@ if __name__ == "__main__":
                                 weekly_soft_overage,
                                 rolling_weeks_for_soft,
                                 full_coverage,
-                                workers_assigned)
+                                workers_assigned,
+                                True)
     print_summary(summary)
     # pprint.pprint(result)

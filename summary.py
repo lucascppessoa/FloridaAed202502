@@ -1,13 +1,14 @@
 """Summary and reporting functions for EMS staffing optimization results."""
 
 from typing import Dict, Any, List
-
+import json
 from helpers import (
     is_night_shift,
     is_weekend_day,
     dow_name,
     day_team_allocation_from_assigned,
     night_team_allocation_from_assigned,
+    compute_shift_hours,
 )
 
 SKILLS = ["MD", "N", "NA", "D"]
@@ -26,7 +27,8 @@ def generate_summary(solver,
                      weekly_soft_overage,
                      rolling_weeks_for_soft,
                      full_coverage,
-                     workers_assigned) -> Dict[str, Any]:
+                     workers_assigned,
+                     include_assignments) -> Dict[str, Any]:
     """
     Generate a summary of the optimization results.
 
@@ -188,28 +190,29 @@ def generate_summary(solver,
         "team_coverage_by_shift": team_coverage_by_shift,
     }
 
-    # if include_assignments and status in ("OPTIMAL", "FEASIBLE"):
-    #     # Detailed assignment dump
-    #     by_shift = []
-    #     for shift in range(shifts):
-    #         skill_to_workers = {}
-    #         for skill in SKILLS:
-    #             assigned = []
-    #             for i in range(workforce_count_by_skill[skill]):
-    #                 if solver.Value(workers_assigned[(skill, i, shift)]) > 0.5:
-    #                     assigned.append(i)
-    #             skill_to_workers[skill] = assigned
-    #         by_shift.append({
-    #             "shift": shift,
-    #             "hours": shift_hours[shift],
-    #             "fully_covered": int(solver.Value(full_coverage[shift])),
-    #             "teams_covered": team_coverage_by_shift[shift]["covered"],
-    #             "team_slots": team_coverage_by_shift[shift]["slots"],
-    #             "skill_to_workers": skill_to_workers
-    #         })
-    #     summary["assignments"] = {
-    #         "by_shift": by_shift,
-    #     }
+    if include_assignments and status in ("OPTIMAL", "FEASIBLE"):
+        shift_hours = compute_shift_hours(days)
+        # Detailed assignment dump
+        by_shift = []
+        for shift in range(shifts):
+            skill_to_workers = {}
+            for skill in SKILLS:
+                assigned = []
+                for i in range(workforce_count_by_skill[skill]):
+                    if solver.Value(workers_assigned[(skill, i, shift)]) > 0.5:
+                        assigned.append(i)
+                skill_to_workers[skill] = assigned
+            by_shift.append({
+                "shift": shift,
+                "hours": shift_hours[shift],
+                "fully_covered": int(solver.Value(full_coverage[shift])),
+                "teams_covered": team_coverage_by_shift[shift]["covered"],
+                "team_slots": team_coverage_by_shift[shift]["slots"],
+                "skill_to_workers": skill_to_workers
+            })
+        summary["assignments"] = {
+            "by_shift": by_shift,
+        }
 
     return summary
 
@@ -238,4 +241,14 @@ def print_summary(summary) -> None:
         print(f"  {t}: {covered} / {slots} ({pct:.1%})")
     print(f"Filled positions: {summary['filled_positions_total']} / {summary['total_positions_demand']} "
           f"({summary['filled_positions_fraction']:.1%})")
+
+
+    print("Assignments:")
+    abcd = {}
+    for shift in summary["assignments"]["by_shift"]:
+        abcd[shift['shift']] = {'workers': shift['skill_to_workers'], 'teams': shift['teams_covered']}
+    
+    # Write abcd to a json file
+    with open('out.json', 'w') as f:
+        json.dump(abcd, f)
 
