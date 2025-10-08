@@ -2,6 +2,7 @@
 
 from typing import Dict, Any, List
 import json
+import csv
 from helpers import (
     is_night_shift,
     is_weekend_day,
@@ -215,6 +216,59 @@ def generate_summary(solver,
         }
 
     return summary
+
+
+def generate_team_csv_files(summary: Dict[str, Any], days: int = 30) -> None:
+    """
+    Generate CSV files for each team type (ADV, BAS, MOTO) showing the number
+    of teams formed per shift (morning, afternoon, night) per day.
+    
+    Args:
+        summary: The summary dictionary containing team_coverage_by_shift data.
+        days: The number of days in the planning horizon (default 30).
+    """
+    # Initialize data structure: team_type -> shift_type -> day -> count
+    team_data = {
+        "ADV": {"morning": [0] * days, "afternoon": [0] * days, "night": [0] * days},
+        "BAS": {"morning": [0] * days, "afternoon": [0] * days, "night": [0] * days},
+        "MOTO": {"morning": [0] * days, "afternoon": [0] * days, "night": [0] * days},
+    }
+    
+    # Parse the team coverage data
+    for shift_info in summary["team_coverage_by_shift"]:
+        shift_num = shift_info["shift"]
+        day_idx = shift_info["day_index"]
+        covered = shift_info["covered"]
+        
+        # Determine shift type within the day (0=morning, 1=afternoon, 2=night)
+        shift_in_day = shift_num % 3
+        if shift_in_day == 0:
+            shift_type = "morning"
+        elif shift_in_day == 1:
+            shift_type = "afternoon"
+        else:  # shift_in_day == 2
+            shift_type = "night"
+        
+        # Record the number of teams covered for each team type
+        for team_type in ["ADV", "BAS", "MOTO"]:
+            team_data[team_type][shift_type][day_idx] = covered.get(team_type, 0)
+    
+    # Generate CSV files for each team type
+    for team_type in ["ADV", "BAS", "MOTO"]:
+        filename = f"{team_type.lower()}.csv"
+        with open(filename, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            
+            # Write header: "Shift,1,2,3,...,30"
+            header = ["Shift"] + list(range(1, days + 1))
+            writer.writerow(header)
+            
+            # Write rows for each shift type
+            for shift_type in ["morning", "afternoon", "night"]:
+                row = [shift_type] + team_data[team_type][shift_type]
+                writer.writerow(row)
+        
+        print(f"Generated {filename}")
 
 
 def print_summary(summary) -> None:

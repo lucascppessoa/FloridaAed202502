@@ -36,7 +36,7 @@ Run:
 """
 
 from typing import List, Tuple
-from summary import (print_summary, generate_summary)
+from summary import (print_summary, generate_summary, generate_team_csv_files)
 from solver import solve_max_covered_shifts
 
 if __name__ == "__main__":
@@ -94,4 +94,5 @@ if __name__ == "__main__":
                                 workers_assigned,
                                 True)
     print_summary(summary)
+    generate_team_csv_files(summary, days)
     # pprint.pprint(result)
