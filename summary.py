@@ -130,7 +130,7 @@ def generate_summary(solver,
             }
             alloc = night_team_allocation_from_assigned(assigned_counts, team_supply)
         else:
-            if is_weekend_day(day_idx):
+            if is_weekend_day(shift):
                 team_supply = {
                     "ADV": teams_per_day_shift.get("ADV", 0),
                     "BAS": teams_per_day_shift.get("BAS", 0),

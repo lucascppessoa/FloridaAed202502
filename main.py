@@ -28,7 +28,7 @@ Notes:
 - We do NOT build explicit teams in the model. After solving, we compute the maximum number
   of teams per type that can be formed from the assigned skill counts in each shift via a small
   integer calculation, and report those team counts.
-- Weeks are aligned to Sunday 06:00 with shift index 0 corresponding to Sunday morning.
+- Weeks are aligned to Monday 06:00 with shift index 0 corresponding to Monday morning.
 
 Run:
   pip install ortools
