@@ -36,7 +36,8 @@ Run:
 """
 
 from typing import List, Tuple
-from summary import (print_summary, generate_summary, generate_team_csv_files)
+from summary import (print_summary, generate_summary, generate_team_csv_files, 
+                     validate_worker_constraints, print_validation_results)
 from solver import solve_max_covered_shifts
 
 if __name__ == "__main__":
@@ -79,7 +80,7 @@ if __name__ == "__main__":
         rolling_weeks_for_soft=rolling_weeks_for_soft,
         worker_list=demo_workers,
         max_shift_imbalance=None,  # Max difference of 10 workers between any two shifts
-        time_limit=600.0,
+        time_limit=120.0,
         num_search_workers=12,
     )
     summary = generate_summary(solver,
@@ -95,4 +96,13 @@ if __name__ == "__main__":
                                 True)
     print_summary(summary)
     generate_team_csv_files(summary, days)
+    
+    # Validate the solution
+    validation = validate_worker_constraints(
+        summary=summary,
+        worker_list=demo_workers,
+        weekly_soft_overage=weekly_soft_overage,
+        rolling_weeks_for_soft=rolling_weeks_for_soft
+    )
+    print_validation_results(validation)
     # pprint.pprint(result)

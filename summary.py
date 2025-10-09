@@ -10,6 +10,7 @@ from helpers import (
     day_team_allocation_from_assigned,
     night_team_allocation_from_assigned,
     compute_shift_hours,
+    aligned_week_windows,
 )
 
 SKILLS = ["MD", "N", "D"]
@@ -271,6 +272,152 @@ def generate_team_csv_files(summary: Dict[str, Any], days: int = 30) -> None:
         print(f"Generated {filename}")
 
 
+def validate_worker_constraints(
+    summary: Dict[str, Any],
+    worker_list: List[tuple],
+    weekly_soft_overage: int = 2,
+    rolling_weeks_for_soft: int = 4
+) -> Dict[str, Any]:
+    """
+    Validate that all worker constraints are satisfied in the solution.
+    
+    Args:
+        summary: The summary dictionary containing assignment data
+        worker_list: List of tuples (skill, weekly_hour_cap) for each worker
+        weekly_soft_overage: Per-week overage allowed (e.g., 2 allows 42 when cap=40)
+        rolling_weeks_for_soft: Rolling aligned K-week window cap
+    
+    Returns:
+        Dictionary with validation results:
+            - valid: bool, True if all constraints satisfied
+            - violations: list of violation descriptions
+            - stats: dictionary with violation counts by type
+    """
+    violations = []
+    stats = {
+        "consecutive_shifts": 0,
+        "weekly_overage": 0,
+        "rolling_weeks_overage": 0,
+    }
+    
+    if "assignments" not in summary or summary["status"] not in ("OPTIMAL", "FEASIBLE"):
+        return {
+            "valid": False,
+            "violations": ["No valid assignments to validate"],
+            "stats": stats,
+        }
+    
+    days = summary["days"]
+    shifts = summary["shifts_total"]
+    shift_hours = compute_shift_hours(days)
+    windows = [(w[0], w[1]) for w in aligned_week_windows(shifts)]
+    
+    # Build worker data structure: skill -> worker_id -> worker_info
+    workers_by_skill: Dict[str, Dict[int, Dict[str, Any]]] = {skill: {} for skill in SKILLS}
+    worker_idx_by_skill = {skill: 0 for skill in SKILLS}
+    
+    for skill, cap in worker_list:
+        worker_id = worker_idx_by_skill[skill]
+        workers_by_skill[skill][worker_id] = {
+            "skill": skill,
+            "weekly_cap": cap,
+            "weekly_soft_cap": cap + weekly_soft_overage,
+            "rolling_cap": cap * rolling_weeks_for_soft,
+            "shifts": [],  # List of shift indices this worker is assigned to
+        }
+        worker_idx_by_skill[skill] += 1
+    
+    # Extract assignments from summary
+    for shift_data in summary["assignments"]["by_shift"]:
+        shift = shift_data["shift"]
+        for skill, worker_ids in shift_data["skill_to_workers"].items():
+            for worker_id in worker_ids:
+                if worker_id in workers_by_skill[skill]:
+                    workers_by_skill[skill][worker_id]["shifts"].append(shift)
+    
+    # Validate constraints for each worker
+    for skill in SKILLS:
+        for worker_id, worker in workers_by_skill[skill].items():
+            worker_name = f"{skill}-{worker_id}"
+            assigned_shifts = sorted(worker["shifts"])
+            
+            if not assigned_shifts:
+                continue  # Worker not assigned to any shift
+            
+            # 1. Check no 3 consecutive shifts
+            for i in range(len(assigned_shifts) - 2):
+                if (assigned_shifts[i+1] == assigned_shifts[i] + 1 and 
+                    assigned_shifts[i+2] == assigned_shifts[i] + 2):
+                    violations.append(
+                        f"Worker {worker_name} has 3 consecutive shifts: "
+                        f"{assigned_shifts[i]}, {assigned_shifts[i+1]}, {assigned_shifts[i+2]}"
+                    )
+                    stats["consecutive_shifts"] += 1
+            
+            # 2. Check weekly soft cap for each aligned week window
+            for week_idx, (start, end) in enumerate(windows):
+                week_shifts = [s for s in assigned_shifts if start <= s < end]
+                week_hours = sum(shift_hours[s] for s in week_shifts)
+                
+                if week_hours > worker["weekly_soft_cap"]:
+                    violations.append(
+                        f"Worker {worker_name} exceeds weekly soft cap in week {week_idx} "
+                        f"(shifts {start}-{end-1}): {week_hours}h > {worker['weekly_soft_cap']}h"
+                    )
+                    stats["weekly_overage"] += 1
+            
+            # 3. Check rolling K-week cap
+            if len(windows) >= rolling_weeks_for_soft:
+                for w in range(len(windows) - rolling_weeks_for_soft + 1):
+                    start = windows[w][0]
+                    end = windows[w + rolling_weeks_for_soft - 1][1]
+                    rolling_shifts = [s for s in assigned_shifts if start <= s < end]
+                    rolling_hours = sum(shift_hours[s] for s in rolling_shifts)
+                    
+                    if rolling_hours > worker["rolling_cap"]:
+                        violations.append(
+                            f"Worker {worker_name} exceeds {rolling_weeks_for_soft}-week rolling cap "
+                            f"(weeks {w}-{w+rolling_weeks_for_soft-1}, shifts {start}-{end-1}): "
+                            f"{rolling_hours}h > {worker['rolling_cap']}h"
+                        )
+                        stats["rolling_weeks_overage"] += 1
+    
+    return {
+        "valid": len(violations) == 0,
+        "violations": violations,
+        "stats": stats,
+    }
+
+
+def print_validation_results(validation: Dict[str, Any]) -> None:
+    """
+    Print validation results in a readable format.
+    
+    Args:
+        validation: The validation results dictionary from validate_worker_constraints
+    """
+    print("\n" + "="*80)
+    print("CONSTRAINT VALIDATION RESULTS")
+    print("="*80)
+    
+    if validation["valid"]:
+        print("✓ All constraints satisfied! The solution is valid.")
+    else:
+        print("✗ Constraint violations detected!")
+        print(f"\nTotal violations: {len(validation['violations'])}")
+        print(f"  - Consecutive shift violations: {validation['stats']['consecutive_shifts']}")
+        print(f"  - Weekly overage violations: {validation['stats']['weekly_overage']}")
+        print(f"  - Rolling {4}-week overage violations: {validation['stats']['rolling_weeks_overage']}")
+        
+        if validation["violations"]:
+            print("\nDetailed violations:")
+            print("-" * 80)
+            for i, violation in enumerate(validation["violations"], 1):
+                print(f"{i}. {violation}")
+    
+    print("="*80 + "\n")
+
+
 def print_summary(summary) -> None:
     """Print concise summary with granular team coverage and MOTO weekend rule."""
     print("Status:", summary["status"])
@@ -281,7 +428,7 @@ def print_summary(summary) -> None:
     print("Workforce counts by skill:")
     for skill, n in summary["workforce_count_by_skill"].items():
         print(f"  {skill}: {n}")
-    print(f"Weekly soft overage: {int(round(100*summary['weekly_soft_overage']))}%")
+    print(f"Weekly soft overage: {summary['weekly_soft_overage']}")
     print(f"Rolling weeks for soft cap: {summary['rolling_weeks_for_soft']}")
     print(f"Shifts fully covered: {summary['shifts_fully_covered']} / {summary['shifts_total']} "
           f"({summary['coverage_fraction']:.1%})")
