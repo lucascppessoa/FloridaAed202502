@@ -79,7 +79,7 @@ if __name__ == "__main__":
         rolling_weeks_for_soft=rolling_weeks_for_soft,
         worker_list=demo_workers,
         max_shift_imbalance=None,  # Max difference of 10 workers between any two shifts
-        time_limit=300.0,
+        time_limit=600.0,
         num_search_workers=12,
     )
     summary = generate_summary(solver,

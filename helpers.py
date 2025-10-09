@@ -79,8 +79,7 @@ def day_team_allocation_from_assigned(
 
     Constraints (day):
       x_ADV <= MD
-      x_ADV + x_MOTO <= N
-      x_BAS + x_MOTO <= NA
+      x_ADV + x_BAS + 2*x_MOTO <= N  (ADV uses 1N, BAS uses 1N, MOTO uses 2N)
       x_ADV + x_BAS <= D
       0 <= x_t <= team slots for t
     We enumerate on (ADV, BAS) and pick max MOTO greedily.
@@ -89,7 +88,6 @@ def day_team_allocation_from_assigned(
     """
     md = assigned.get("MD", 0)
     n = assigned.get("N", 0)
-    na = assigned.get("NA", 0)
     d = assigned.get("D", 0)
     adv_supply = int(teams_per_day_shift.get("ADV", 0))
     bas_supply = int(teams_per_day_shift.get("BAS", 0))
@@ -101,15 +99,16 @@ def day_team_allocation_from_assigned(
     adv_max = min(adv_supply, md, n, d)
     for adv in range(adv_max + 1):
         d_rem = d - adv
-        if d_rem < 0:
+        n_rem = n - adv
+        if d_rem < 0 or n_rem < 0:
             continue
-        bas_max = min(bas_supply, d_rem, na)
+        bas_max = min(bas_supply, d_rem, n_rem)
         for bas in range(bas_max + 1):
-            na_rem = na - bas
-            n_rem = n - adv
-            if na_rem < 0 or n_rem < 0:
+            n_rem_after_bas = n_rem - bas
+            if n_rem_after_bas < 0:
                 continue
-            moto_max = min(moto_supply, na_rem, n_rem)
+            # MOTO needs 2N each
+            moto_max = min(moto_supply, n_rem_after_bas // 2)
             if moto_max < 0:
                 moto_max = 0
             total = adv + bas + moto_max
@@ -129,8 +128,7 @@ def night_team_allocation_from_assigned(
 
     Constraints (night):
       x_ADV <= MD
-      x_ADV <= N
-      x_BAS <= NA
+      x_ADV + x_BAS <= N  (both ADV and BAS use 1N each)
       x_ADV + x_BAS <= D
       0 <= x_t <= team slots for t
     We enumerate on ADV and pick max BAS greedily.
@@ -139,7 +137,6 @@ def night_team_allocation_from_assigned(
     """
     md = assigned.get("MD", 0)
     n = assigned.get("N", 0)
-    na = assigned.get("NA", 0)
     d = assigned.get("D", 0)
     adv_supply = int(teams_per_night_shift.get("ADV", 0))
     bas_supply = int(teams_per_night_shift.get("BAS", 0))
@@ -151,9 +148,10 @@ def night_team_allocation_from_assigned(
     adv_max = min(adv_supply, md, n, d)
     for adv in range(adv_max + 1):
         d_rem = d - adv
-        if d_rem < 0:
+        n_rem = n - adv
+        if d_rem < 0 or n_rem < 0:
             continue
-        bas_max = min(bas_supply, d_rem, na)
+        bas_max = min(bas_supply, d_rem, n_rem)
         total = adv + bas_max
         if total > best_total:
             best_total = total
