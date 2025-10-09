@@ -30,7 +30,7 @@ def solve_max_covered_shifts(
         weekly_soft_overage: int = 2,  # e.g., +10% per week: 44 when cap=40
         rolling_weeks_for_soft: int = 4,  # total over any K aligned weeks <= K * cap (e.g., 160 for K=4)
         # Balance constraint:
-        max_shift_imbalance: Optional[int] = None,  # max difference in met demand between any two shifts
+        max_shift_imbalance: Optional[Dict[str, int]] = None,  # max imbalance per team type (e.g., {"ADV": 2, "BAS": 5})
         # Solve options:
         time_limit: float = 60.0,
         num_search_workers: int = 8,
@@ -47,7 +47,8 @@ def solve_max_covered_shifts(
       teams_per_night_shift: team counts for night shifts (default fixed EMS mix).
       weekly_soft_overage: per-week overage allowed (e.g., 2 allows 42 when cap=40).
       rolling_weeks_for_soft: rolling aligned K-week window cap K * personal_weekly_cap.
-      max_shift_imbalance: maximum allowed difference in met demand between any two shifts (None to disable).
+      max_shift_imbalance: dict mapping team type to max allowed difference in team count between shifts
+                           (e.g., {"ADV": 2, "BAS": 5}). Missing keys or None values disable constraint for that type.
       time_limit: CP-SAT time limit in seconds.
       num_search_workers: CP-SAT parallel workers.
       use_tiebreak_fill_positions: tie-break objective prefers more fully covered shifts after maximizing team slots.
@@ -201,34 +202,32 @@ def solve_max_covered_shifts(
                 >= total_teams_required * c_s
             )
 
-    # Balance constraint: limit difference in met demand between shifts
+    # Balance constraint: limit difference in team counts between shifts (per team type)
     if max_shift_imbalance is not None:
-        # Calculate total demand per shift (for upper bound)
-        max_demand_per_shift = max(sum(demand_by_shift[s].get(skill, 0) for skill in SKILLS) for s in range(shifts))
-
-        # Create variables for met demand per shift
-        met_demand = []
-        for shift in range(shifts):
-            met_demand_s = model.NewIntVar(0, max_demand_per_shift, f"met_demand_{shift}")
-            model.Add(
-                met_demand_s == sum(
-                    workers_assigned[(skill, i, shift)]
-                    for skill in SKILLS
-                    for i in range(workforce_count_by_skill[skill])
+        for team_type in ["ADV", "BAS", "MOTO"]:
+            # Only enforce if this team type is in the dict and has a non-None value
+            if team_type in max_shift_imbalance and max_shift_imbalance[team_type] is not None:
+                imbalance_limit = max_shift_imbalance[team_type]
+                
+                # Calculate supply limit (max possible teams of this type in any shift)
+                team_supply_limit = max(
+                    teams_per_day_shift.get(team_type, 0),
+                    teams_per_night_shift.get(team_type, 0)
                 )
-            )
-            met_demand.append(met_demand_s)
-
-        # Create min and max met demand variables
-        min_met_demand = model.NewIntVar(0, max_demand_per_shift, "min_met_demand")
-        max_met_demand = model.NewIntVar(0, max_demand_per_shift, "max_met_demand")
-
-        # Constrain min and max
-        model.AddMinEquality(min_met_demand, met_demand)
-        model.AddMaxEquality(max_met_demand, met_demand)
-
-        # Enforce balance constraint: max - min <= max_shift_imbalance
-        model.Add(max_met_demand - min_met_demand <= max_shift_imbalance)
+                
+                # Collect teams formed of this type across all shifts
+                teams_by_shift = [teams_formed[(shift, team_type)] for shift in range(shifts)]
+                
+                # Create min and max variables for this team type (domain is [0, supply_limit])
+                min_teams = model.NewIntVar(0, team_supply_limit, f"min_teams_{team_type}")
+                max_teams = model.NewIntVar(0, team_supply_limit, f"max_teams_{team_type}")
+                
+                # Constrain min and max to actual values across shifts
+                model.AddMinEquality(min_teams, teams_by_shift)
+                model.AddMaxEquality(max_teams, teams_by_shift)
+                
+                # Enforce balance constraint for this team type
+                model.Add(max_teams - min_teams <= imbalance_limit)
 
     # Objective: maximize total number of team slots covered across all shifts
     total_positions_demand = sum(
