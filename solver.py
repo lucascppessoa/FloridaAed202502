@@ -8,6 +8,8 @@ from helpers import (
     aligned_week_windows,
     effective_weekly_cap,
     build_shift_skill_demands,
+    is_night_shift,
+    is_weekend_day,
 )
 
 SKILLS = ["MD", "N", "D"]
@@ -35,8 +37,8 @@ def solve_max_covered_shifts(
         use_tiebreak_fill_positions: bool = True,
 ) -> Dict[str, Any]:
     """
-    Maximize the number of fully covered shifts over a horizon with a fixed workforce,
-    provide granular team coverage accounting, and enforce the MOTO weekend rule.
+    Maximize the number of team slots covered over a horizon with a fixed workforce,
+    with explicit team formation modeling and enforcement of the MOTO weekend rule.
 
     Args:
       worker_list: list of tuples (skill, weekly_hour_cap).
@@ -48,8 +50,11 @@ def solve_max_covered_shifts(
       max_shift_imbalance: maximum allowed difference in met demand between any two shifts (None to disable).
       time_limit: CP-SAT time limit in seconds.
       num_search_workers: CP-SAT parallel workers.
-      use_tiebreak_fill_positions: tie-break objective prefers more filled slots after maximizing shifts.
+      use_tiebreak_fill_positions: tie-break objective prefers more fully covered shifts after maximizing team slots.
 
+    Returns:
+      Tuple containing: (solver, workforce_count_by_skill, total_positions_demand, 
+                        full_coverage, workers_assigned, teams_formed)
     """
 
     # Shifts and demands (with MOTO weekend rule)
@@ -126,26 +131,75 @@ def solve_max_covered_shifts(
                         <= rolling_cap_nom_by_skill[skill][i]
                     )
 
+    # Team formation variables and constraints
+    teams_formed = {}  # (shift, team_type) -> IntVar: number of teams formed
+    
     for shift in range(shifts):
-        # Shift fully covered indicator via skill demands:
-        # full_coverage[s] = 1 -> for all skills with positive demand: sum y == demand (via >= and <= together)        
+        # Determine team supply for this shift (accounting for MOTO weekend rule)
+        if is_night_shift(shift):
+            team_supply = {
+                "ADV": teams_per_night_shift.get("ADV", 0),
+                "BAS": teams_per_night_shift.get("BAS", 0),
+                "MOTO": 0,
+            }
+        elif is_weekend_day(shift):
+            team_supply = {
+                "ADV": teams_per_day_shift.get("ADV", 0),
+                "BAS": teams_per_day_shift.get("BAS", 0),
+                "MOTO": 0,  # weekend rule
+            }
+        else:
+            team_supply = {
+                "ADV": teams_per_day_shift.get("ADV", 0),
+                "BAS": teams_per_day_shift.get("BAS", 0),
+                "MOTO": teams_per_day_shift.get("MOTO", 0),
+            }
+        
+        # Create team formation variables
+        for team_type in ["ADV", "BAS", "MOTO"]:
+            max_teams = team_supply[team_type]
+            teams_formed[(shift, team_type)] = model.NewIntVar(0, max_teams, f"teams_{shift}_{team_type}")
+        
+        # Skill assignments for this shift
+        md_assigned = sum(workers_assigned[("MD", i, shift)] for i in range(workforce_count_by_skill["MD"]))
+        n_assigned = sum(workers_assigned[("N", i, shift)] for i in range(workforce_count_by_skill["N"]))
+        d_assigned = sum(workers_assigned[("D", i, shift)] for i in range(workforce_count_by_skill["D"]))
+        
+        # Team formation constraints
+        # ADV teams need: 1 MD, 1 N, 1 D each
+        model.Add(teams_formed[(shift, "ADV")] <= md_assigned)
+        model.Add(teams_formed[(shift, "ADV")] <= d_assigned)
+        
+        # BAS teams need: 1 N, 1 D each
+        # MOTO teams need: 2 N each
+        # Combined constraint for N usage: ADV uses 1N, BAS uses 1N, MOTO uses 2N
+        model.Add(
+            teams_formed[(shift, "ADV")] + 
+            teams_formed[(shift, "BAS")] + 
+            2 * teams_formed[(shift, "MOTO")] 
+            <= n_assigned
+        )
+        
+        # Combined constraint for D usage: ADV uses 1D, BAS uses 1D
+        model.Add(
+            teams_formed[(shift, "ADV")] + 
+            teams_formed[(shift, "BAS")] 
+            <= d_assigned
+        )
+        
+        # Full coverage indicator (kept for compatibility)
         c_s = model.NewBoolVar(f"full_coverage_{shift}")
         full_coverage.append(c_s)
-        for skill in SKILLS:
-            demand = demand_by_shift[shift].get(skill, 0)
-            if demand > 0:
-                model.Add(
-                    sum(workers_assigned[(skill, i, shift)] for i in range(workforce_count_by_skill[skill]))
-                    >= demand * c_s
-                )
-
-            # Coverage constraints per shift and skill: do not exceed demand
-            if demand == 0:
-                for i in range(workforce_count_by_skill[skill]):
-                    model.Add(workers_assigned[(skill, i, shift)] == 0)
-            else:
-                model.Add(
-                    sum(workers_assigned[(skill, i, shift)] for i in range(workforce_count_by_skill[skill])) <= demand)
+        
+        # Full coverage means all team slots are filled
+        total_teams_required = team_supply["ADV"] + team_supply["BAS"] + team_supply["MOTO"]
+        if total_teams_required > 0:
+            model.Add(
+                teams_formed[(shift, "ADV")] + 
+                teams_formed[(shift, "BAS")] + 
+                teams_formed[(shift, "MOTO")] 
+                >= total_teams_required * c_s
+            )
 
     # Balance constraint: limit difference in met demand between shifts
     if max_shift_imbalance is not None:
@@ -176,21 +230,26 @@ def solve_max_covered_shifts(
         # Enforce balance constraint: max - min <= max_shift_imbalance
         model.Add(max_met_demand - min_met_demand <= max_shift_imbalance)
 
-    # Objective: maximize number of fully covered shifts (c),
-    # tie-break: maximize filled positions (sum y without exceeding demands).
-
+    # Objective: maximize total number of team slots covered across all shifts
     total_positions_demand = sum(
         sum(demand_by_shift[shift].get(skill, 0) for skill in SKILLS) for shift in range(shifts))
+    
+    # Primary objective: maximize teams formed
+    total_teams_covered = sum(
+        teams_formed[(shift, team_type)] 
+        for shift in range(shifts) 
+        for team_type in ["ADV", "BAS", "MOTO"]
+    )
+    
     if use_tiebreak_fill_positions:
-        big_W = total_positions_demand + 1  # ensures 1 more full shift dominates any change in filled slots
+        # Tie-break: prefer more balanced coverage (maximize fully covered shifts as secondary)
+        big_W = shifts * (teams_per_day_shift.get("ADV", 0) + teams_per_day_shift.get("BAS", 0) + teams_per_day_shift.get("MOTO", 0)) + 1
         model.Maximize(
-            big_W * sum(full_coverage[shift] for shift in range(shifts)) +
-            sum(workers_assigned[(skill, i, s)] for skill in SKILLS
-                for i in range(workforce_count_by_skill[skill])
-                for s in range(shifts))
+            total_teams_covered * big_W +
+            sum(full_coverage[shift] for shift in range(shifts))
         )
     else:
-        model.Maximize(sum(full_coverage[shift] for shift in range(shifts)))
+        model.Maximize(total_teams_covered)
 
     # Solve
     solver = cp_model.CpSolver()
@@ -199,4 +258,4 @@ def solve_max_covered_shifts(
     # solver.parameters.log_search_progress = True  # Uncomment for debug
     solver.Solve(model)
 
-    return solver, workforce_count_by_skill, total_positions_demand, full_coverage, workers_assigned
+    return solver, workforce_count_by_skill, total_positions_demand, full_coverage, workers_assigned, teams_formed

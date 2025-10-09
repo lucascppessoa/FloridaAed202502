@@ -72,7 +72,7 @@ if __name__ == "__main__":
     demo_workers += [("D", 30)] * 3
     demo_workers += [("D", 40)] * 85
 
-    solver, workforce_count_by_skill, total_positions_demand, full_coverage, workers_assigned = solve_max_covered_shifts(
+    solver, workforce_count_by_skill, total_positions_demand, full_coverage, workers_assigned, teams_formed = solve_max_covered_shifts(
         teams_per_day_shift=teams_per_day_shift,
         teams_per_night_shift=teams_per_night_shift,
         days=days,
@@ -80,7 +80,7 @@ if __name__ == "__main__":
         rolling_weeks_for_soft=rolling_weeks_for_soft,
         worker_list=demo_workers,
         max_shift_imbalance=None,  # Max difference of 10 workers between any two shifts
-        time_limit=120.0,
+        time_limit=600.0,
         num_search_workers=12,
     )
     summary = generate_summary(solver,
@@ -93,6 +93,7 @@ if __name__ == "__main__":
                                 rolling_weeks_for_soft,
                                 full_coverage,
                                 workers_assigned,
+                                teams_formed,
                                 True)
     print_summary(summary)
     generate_team_csv_files(summary, days)

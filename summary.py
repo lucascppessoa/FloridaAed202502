@@ -30,6 +30,7 @@ def generate_summary(solver,
                      rolling_weeks_for_soft,
                      full_coverage,
                      workers_assigned,
+                     teams_formed,
                      include_assignments) -> Dict[str, Any]:
     """
     Generate a summary of the optimization results.
@@ -109,7 +110,7 @@ def generate_summary(solver,
     # Used workers and hours stats
     workers_used_by_skill: Dict[str, int] = {}
 
-    # Granular team coverage accounting (post-solve from assigned skills)
+    # Granular team coverage accounting (from solver's teams_formed variables)
     team_coverage_by_shift: List[Dict[str, Any]] = []
     teams_covered_by_type = {"ADV": 0, "BAS": 0, "MOTO": 0}
     team_slots_by_type_total = {"ADV": 0, "BAS": 0, "MOTO": 0}
@@ -119,8 +120,6 @@ def generate_summary(solver,
     for shift in range(shifts):
         is_night = is_night_shift(shift)
         day_idx = shift // 3
-        # Assigned skill counts in this shift
-        assigned_counts = {skill: sum(int(solver.Value(workers_assigned[(skill, i, shift)])) for i in range(workforce_count_by_skill[skill])) for skill in SKILLS}
 
         # Team supply for this shift (apply MOTO weekend rule)
         if is_night:
@@ -129,7 +128,6 @@ def generate_summary(solver,
                 "BAS": teams_per_night_shift.get("BAS", 0),
                 "MOTO": 0,
             }
-            alloc = night_team_allocation_from_assigned(assigned_counts, team_supply)
         else:
             if is_weekend_day(shift):
                 team_supply = {
@@ -143,14 +141,19 @@ def generate_summary(solver,
                     "BAS": teams_per_day_shift.get("BAS", 0),
                     "MOTO": teams_per_day_shift.get("MOTO", 0),
                 }
-            alloc = day_team_allocation_from_assigned(assigned_counts, team_supply)
+
+        # Get teams formed from solver (exact values from optimization)
+        covered = {
+            "ADV": int(round(solver.Value(teams_formed[(shift, "ADV")]))),
+            "BAS": int(round(solver.Value(teams_formed[(shift, "BAS")]))),
+            "MOTO": int(round(solver.Value(teams_formed[(shift, "MOTO")]))),
+        }
 
         # Totals
         team_slots_total += sum(team_supply.values())
         for t in ["ADV", "BAS", "MOTO"]:
             team_slots_by_type_total[t] += team_supply.get(t, 0)
 
-        covered = {"ADV": alloc.get("ADV", 0), "BAS": alloc.get("BAS", 0), "MOTO": alloc.get("MOTO", 0)}
         teams_covered_total += covered["ADV"] + covered["BAS"] + covered["MOTO"]
         for t in ["ADV", "BAS", "MOTO"]:
             teams_covered_by_type[t] += covered[t]
