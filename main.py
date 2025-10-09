@@ -53,11 +53,11 @@ if __name__ == "__main__":
     demo_workers += [("N", 30)] * 3
     demo_workers += [("N", 40)] * 33
 
-    demo_workers += [("NA", 10)] * 24
-    demo_workers += [("NA", 20)] * 52
-    demo_workers += [("NA", 24)] * 8
-    demo_workers += [("NA", 30)] * 12
-    demo_workers += [("NA", 40)] * 106
+    demo_workers += [("N", 10)] * 24
+    demo_workers += [("N", 20)] * 52
+    demo_workers += [("N", 24)] * 8
+    demo_workers += [("N", 30)] * 12
+    demo_workers += [("N", 40)] * 106
 
     demo_workers += [("MD", 10)] * 5
     demo_workers += [("MD", 20)] * 14

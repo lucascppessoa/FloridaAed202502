@@ -10,12 +10,12 @@ from helpers import (
     build_shift_skill_demands,
 )
 
-SKILLS = ["MD", "N", "NA", "D"]
+SKILLS = ["MD", "N", "D"]
 
 TEAM_REQUIREMENTS: Dict[str, Dict[str, int]] = {
     "ADV": {"MD": 1, "N": 1, "D": 1},
-    "BAS": {"NA": 1, "D": 1},
-    "MOTO": {"N": 1, "NA": 1},
+    "BAS": {"N": 1, "D": 1},
+    "MOTO": {"N": 2},
 }
 
 
