@@ -31,6 +31,8 @@ def solve_max_covered_shifts(
         rolling_weeks_for_soft: int = 4,  # total over any K aligned weeks <= K * cap (e.g., 160 for K=4)
         # Balance constraint:
         max_shift_imbalance: Optional[Dict[str, int]] = None,  # max imbalance per team type (e.g., {"ADV": 2, "BAS": 5})
+        # Team weights:
+        team_weights: Optional[Dict[str, int]] = None,  # weight per team type in objective (e.g., {"ADV": 2, "BAS": 1, "MOTO": 1})
         # Solve options:
         time_limit: float = 60.0,
         num_search_workers: int = 8,
@@ -49,6 +51,8 @@ def solve_max_covered_shifts(
       rolling_weeks_for_soft: rolling aligned K-week window cap K * personal_weekly_cap.
       max_shift_imbalance: dict mapping team type to max allowed difference in team count between shifts
                            (e.g., {"ADV": 2, "BAS": 5}). Missing keys or None values disable constraint for that type.
+      team_weights: dict mapping team type to weight in objective function (e.g., {"ADV": 2, "BAS": 1, "MOTO": 1}).
+                    Missing keys default to weight 1. Higher weight = higher priority in optimization.
       time_limit: CP-SAT time limit in seconds.
       num_search_workers: CP-SAT parallel workers.
       use_tiebreak_fill_positions: tie-break objective prefers more fully covered shifts after maximizing team slots.
@@ -233,16 +237,29 @@ def solve_max_covered_shifts(
     total_positions_demand = sum(
         sum(demand_by_shift[shift].get(skill, 0) for skill in SKILLS) for shift in range(shifts))
     
-    # Primary objective: maximize teams formed
+    # Primary objective: maximize teams formed (with weights)
+    # Get weight for each team type (default to 1 if not specified)
+    weights = {}
+    for team_type in ["ADV", "BAS", "MOTO"]:
+        if team_weights is not None and team_type in team_weights:
+            weights[team_type] = team_weights[team_type]
+        else:
+            weights[team_type] = 1
+    
     total_teams_covered = sum(
-        teams_formed[(shift, team_type)] 
+        weights[team_type] * teams_formed[(shift, team_type)] 
         for shift in range(shifts) 
         for team_type in ["ADV", "BAS", "MOTO"]
     )
     
     if use_tiebreak_fill_positions:
         # Tie-break: prefer more balanced coverage (maximize fully covered shifts as secondary)
-        big_W = shifts * (teams_per_day_shift.get("ADV", 0) + teams_per_day_shift.get("BAS", 0) + teams_per_day_shift.get("MOTO", 0)) + 1
+        # big_W must be larger than max possible weighted team count to ensure tie-break doesn't affect primary objective
+        max_weighted_teams_per_shift = sum(
+            weights[team_type] * teams_per_day_shift.get(team_type, 0)
+            for team_type in ["ADV", "BAS", "MOTO"]
+        )
+        big_W = shifts * max_weighted_teams_per_shift + 1
         model.Maximize(
             total_teams_covered * big_W +
             sum(full_coverage[shift] for shift in range(shifts))

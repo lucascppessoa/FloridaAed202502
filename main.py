@@ -8,7 +8,8 @@ Scenario:
 - You supply a fixed workforce as a list of tuples: ('skill', weekly_hour_cap).
   Example: ('MD', 10) is a medical doctor with a 10h/week cap.
 - Objective:
-    Maximize the total number of team slots covered across all shifts (ADV + BAS + MOTO teams).
+    Maximize the total weighted number of team slots covered across all shifts.
+    Teams can be weighted differently (e.g., ADV teams worth 2x, others 1x) to prioritize valuable teams.
     Tie-breaker: maximize the number of fully covered shifts (all teams present in a shift).
 - Team formation is explicitly modeled in the optimization:
     Teams are decision variables with constraints ensuring proper skill allocation.
@@ -27,6 +28,8 @@ Rules/constraints (adapted for fixed workforce) AND MOTO weekend rule:
     * Over any rolling K-week window (aligned, default K=4), the total must be ≤ K * personal_weekly_cap.
 - Optional balance constraint: limit max difference in team counts between shifts per team type
     (e.g., {"ADV": 2, "BAS": 5} ensures ADV teams vary by at most 2, BAS by at most 5).
+- Optional team weights: assign different values to team types in the objective
+    (e.g., {"ADV": 2} makes ADV teams worth 2x, prioritizing their formation).
 
 Notes:
 - Teams are explicit decision variables in the CP-SAT model.
@@ -55,7 +58,15 @@ if __name__ == "__main__":
     # {"ADV": 2, "BAS": 5} = ADV teams vary by max 2, BAS by max 5 across shifts
     # {"ADV": 1} = only constrain ADV, BAS and MOTO unconstrained
     # Note: MOTO typically not constrained due to weekend/night rules
-    team_imbalance = {"ADV": 1, "BAS": 10}  # Set to a dict to enable, e.g., {"ADV": 2, "BAS": 5}
+    team_imbalance = {"ADV": 3, "BAS": 10}  # Set to a dict to enable, e.g., {"ADV": 2, "BAS": 5}
+    
+    # Team weights for objective function (optional):
+    # None or {} = all teams have weight 1 (equal priority)
+    # {"ADV": 2} = ADV teams worth 2x, others worth 1x
+    # {"ADV": 2, "BAS": 1, "MOTO": 1} = explicit weights for all types
+    # Higher weight = higher priority in optimization
+    team_weights = {"ADV": 8, "BAS": 2, "MOTO": 1}  # ADV teams are more valuable
+    
     demo_workers: List[Tuple[str, int]] = []
     demo_workers += [("N", 10)] * 5
     demo_workers += [("N", 20)] * 14
@@ -88,8 +99,9 @@ if __name__ == "__main__":
         weekly_soft_overage=weekly_soft_overage,
         rolling_weeks_for_soft=rolling_weeks_for_soft,
         worker_list=demo_workers,
-        max_shift_imbalance=team_imbalance,
-        time_limit=300.0,
+        max_shift_imbalance=None,
+        team_weights=team_weights,
+        time_limit=7.0,
         num_search_workers=12,
     )
     summary = generate_summary(solver,
