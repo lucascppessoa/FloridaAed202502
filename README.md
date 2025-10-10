@@ -48,7 +48,7 @@ python main.py
 ```
 
 This will:
-1. Solve the staffing problem (5 minutes with default settings)
+1. Solve the staffing problem (30 seconds with default settings)
 2. Print a summary of results
 3. Generate CSV files for each team type (adv.csv, bas.csv, moto.csv)
 4. Validate all worker constraints
@@ -116,7 +116,7 @@ team_imbalance = {"ADV": 3, "BAS": 10}
 
 #### **Solver Settings**
 ```python
-time_limit = 300.0        # Maximum solve time in seconds
+time_limit = 30.0        # Maximum solve time in seconds
 num_search_workers = 12   # Parallel search threads
 ```
 

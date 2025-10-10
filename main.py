@@ -101,7 +101,7 @@ if __name__ == "__main__":
         worker_list=demo_workers,
         max_shift_imbalance=None,
         team_weights=team_weights,
-        time_limit=7.0,
+        time_limit=30.0,
         num_search_workers=12,
     )
     summary = generate_summary(solver,
