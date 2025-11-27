@@ -110,10 +110,10 @@ if __name__ == "__main__":
         weekly_soft_overage=weekly_soft_overage,
         rolling_weeks_for_soft=rolling_weeks_for_soft,
         worker_list=demo_workers,
-        shift_type_imbalance=shift_type_imbalance,
+        shift_type_imbalance=None,
         team_targets=team_targets,
         team_weights=team_weights,
-        time_limit=180.0,
+        time_limit=300.0,
         num_search_workers=12,
     )
     summary = generate_summary(solver,
