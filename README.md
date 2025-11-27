@@ -2,6 +2,17 @@
 
 A Constraint Programming solution for optimizing Emergency Medical Services (EMS) staffing over a multi-week planning horizon. This system maximizes team coverage while respecting worker constraints, labor rules, and operational requirements.
 
+## Version Compatibility
+
+| Requirement | Version | Notes |
+|-------------|---------|-------|
+| **Python** | 3.13.x | **Python 3.14 has compatibility issues with OR-Tools** |
+| **OR-Tools** | 9.14.6206 | Google's constraint programming solver |
+| **pandas** | 2.3.3 | Data processing |
+| **numpy** | 2.3.3 | Numerical operations |
+
+See `requirements.txt` for complete dependency list with pinned versions.
+
 ## Overview
 
 The system uses Google OR-Tools CP-SAT solver to schedule workers across shifts while:
@@ -15,14 +26,15 @@ The system uses Google OR-Tools CP-SAT solver to schedule workers across shifts 
 - ✅ **Explicit Team Formation Modeling**: Teams are decision variables with proper skill allocation
 - ✅ **Worker Constraint Validation**: No 3 consecutive shifts, weekly hour limits, rolling 4-week caps
 - ✅ **Flexible Team Weights**: Prioritize more valuable teams (e.g., ADV teams worth 2-8x others)
-- ✅ **Balance Constraints**: Optional limits on team count variation across shifts
+- ✅ **Per-Shift-Type Balance**: Balance team counts within morning, afternoon, and night shifts separately
+- ✅ **Team Targets (Soft Floor)**: Prioritize reaching minimum coverage targets before maximizing total
 - ✅ **MOTO Weekend Rule**: Motorcycle teams only operate on weekday day shifts
 - ✅ **Solution Validation**: Automatic checking of all constraints after optimization
 
 ## Installation
 
 ### Prerequisites
-- Python 3.8 or higher
+- Python 3.13.x (Python 3.14 has OR-Tools compatibility issues)
 - pip package manager
 
 ### Setup
@@ -31,11 +43,16 @@ The system uses Google OR-Tools CP-SAT solver to schedule workers across shifts 
 
 2. Create a virtual environment (recommended):
 ```bash
-python -m venv venv
+python3.13 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
-3. Install dependencies:
+3. Install dependencies from lockfile (recommended for reproducible builds):
+```bash
+pip install -r requirements.txt
+```
+
+Or install latest versions (may differ from tested versions):
 ```bash
 pip install ortools pandas numpy
 ```
@@ -105,14 +122,26 @@ team_weights = {"ADV": 8, "BAS": 2, "MOTO": 1}
 - **None** or **{}** = all teams equal weight (1)
 - Optimizer will prefer forming 1 ADV team over 8 MOTO teams
 
-#### **Balance Constraints** (Optional)
+#### **Per-Shift-Type Balance** (Optional)
 ```python
-team_imbalance = {"ADV": 3, "BAS": 10}
+shift_type_imbalance = {"ADV": 2, "BAS": 8}
 ```
-- Limits variation in team counts across shifts
-- **Example**: ADV teams must be within 3 of each other across all shifts
+- Limits variation in team counts **within each shift type** (morning, afternoon, night balanced separately)
+- **Example**: `{"ADV": 2}` means ADV teams vary by max 2 among all morning shifts, max 2 among all afternoon shifts, and max 2 among all night shifts
+- This prevents the optimizer from concentrating coverage in day shifts while leaving nights understaffed
 - **None** = no balance constraints
-- Typically don't constrain MOTO due to weekend/night restrictions
+- Typically don't constrain MOTO due to weekend/night restrictions (always 0 at night/weekend)
+
+#### **Team Targets - Soft Floor** (Optional)
+```python
+team_targets = {"ADV": 3, "BAS": 15}
+```
+- Sets target minimum teams per shift (soft floor with penalty)
+- The optimizer **prioritizes reaching targets** before maximizing total coverage
+- **Example**: `{"ADV": 3}` means try to get at least 3 ADV teams on every shift
+- If targets are impossible (e.g., not enough MDs), it **falls back gracefully** rather than failing
+- Useful for ensuring critical coverage (e.g., always have some ADV teams at night)
+- **None** = no targets, pure maximization
 
 #### **Solver Settings**
 ```python
@@ -257,18 +286,26 @@ JSON file with complete worker assignments:
 - **MOTO weekend rule**: MOTO = 0 on nights and weekends
 
 #### Optional Constraints
-- **Balance**: Max difference in team counts across shifts per team type
+- **Per-Shift-Type Balance**: Max difference in team counts within each shift type (morning, afternoon, night)
+- **Team Targets (Soft Floor)**: Penalty for being below target, prioritizes reaching minimums
 
 ### Objective Function
 
-**Maximize**: Weighted sum of teams formed
+**Maximize** (in priority order):
+1. **Minimize shortfall from targets** (if `team_targets` is set) - highest priority
+2. **Weighted sum of teams formed** - primary objective
+3. **Fully covered shifts** - tie-breaker
 
 ```
-Σ (weight[team_type] × teams_formed[shift, team_type])
-  for all shifts and team types
+Maximize: -shortfall_penalty × total_shortfall 
+        + weight × teams_formed
+        + fully_covered_shifts
 ```
 
-**With tie-breaker**: Among solutions with equal weighted team counts, prefer solutions with more fully covered shifts.
+This hierarchy ensures the optimizer:
+1. First tries to reach target minimums everywhere
+2. Then maximizes total weighted team coverage
+3. Finally prefers more fully covered shifts as a tie-breaker
 
 ## Troubleshooting
 
@@ -301,10 +338,11 @@ JSON file with complete worker assignments:
 
 ## Example Configurations
 
-### Scenario 1: Maximum Coverage (No Balance)
+### Scenario 1: Maximum Coverage (No Constraints)
 ```python
 team_weights = None  # Equal priority
-team_imbalance = None  # No balance constraints
+shift_type_imbalance = None  # No balance constraints
+team_targets = None  # No minimum targets
 time_limit = 300.0
 ```
 Best for: Maximizing total coverage when distribution doesn't matter
@@ -312,20 +350,31 @@ Best for: Maximizing total coverage when distribution doesn't matter
 ### Scenario 2: Prioritize ADV Teams
 ```python
 team_weights = {"ADV": 8, "BAS": 2, "MOTO": 1}
-team_imbalance = None
+shift_type_imbalance = None
+team_targets = None
 time_limit = 300.0
 ```
 Best for: When advanced teams are much more valuable
 
-### Scenario 3: Balanced Coverage
+### Scenario 3: Balanced Coverage Across Shift Types
 ```python
-team_weights = {"ADV": 2}
-team_imbalance = {"ADV": 2, "BAS": 5}
-time_limit = 600.0
+team_weights = {"ADV": 8, "BAS": 2, "MOTO": 1}
+shift_type_imbalance = {"ADV": 2, "BAS": 8}  # Balance within morning/afternoon/night
+team_targets = None
+time_limit = 180.0
 ```
-Best for: Ensuring consistent service levels across all shifts
+Best for: Ensuring consistent service levels within each shift type (morning, afternoon, night)
 
-### Scenario 4: Quick Testing
+### Scenario 4: Guaranteed Minimum Coverage (Soft Floor)
+```python
+team_weights = {"ADV": 8, "BAS": 2, "MOTO": 1}
+shift_type_imbalance = {"ADV": 2, "BAS": 8}
+team_targets = {"ADV": 2, "BAS": 15}  # Prioritize reaching these minimums
+time_limit = 180.0
+```
+Best for: Critical coverage requirements (e.g., always have ADV teams at night)
+
+### Scenario 5: Quick Testing
 ```python
 days = 7  # One week only
 time_limit = 60.0
@@ -341,6 +390,7 @@ Best for: Rapid iteration during configuration
 ├── solver.py         # CP-SAT optimization model
 ├── summary.py        # Results reporting and validation
 ├── helpers.py        # Utility functions
+├── requirements.txt  # Pinned dependency versions (lockfile)
 ├── README.md         # This file
 ├── adv.csv          # Generated: ADV team coverage
 ├── bas.csv          # Generated: BAS team coverage
@@ -358,6 +408,7 @@ For questions, issues, or feature requests, please review the code comments and 
 
 ---
 
-**Version**: 1.0  
-**Last Updated**: 2025
+**Version**: 1.1  
+**Last Updated**: November 2025  
+**Python**: 3.13.x | **OR-Tools**: 9.14.6206
 

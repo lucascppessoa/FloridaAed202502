@@ -1,0 +1,23 @@
+# EMS Staffing Optimization - Python Dependencies
+# Tested with Python 3.13.9
+# WARNING: Python 3.14 has compatibility issues with OR-Tools
+#
+# Install with: pip install -r requirements.txt
+
+# Core optimization solver
+ortools==9.14.6206
+
+# Data processing
+pandas==2.3.3
+numpy==2.3.3
+
+# Dependencies (automatically installed with above)
+absl-py==2.3.1
+immutabledict==4.2.1
+protobuf==6.31.1
+python-dateutil==2.9.0.post0
+pytz==2025.2
+six==1.17.0
+typing-extensions==4.15.0
+tzdata==2025.2
+
