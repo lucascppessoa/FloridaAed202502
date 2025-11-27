@@ -26,8 +26,10 @@ Rules/constraints (adapted for fixed workforce) AND MOTO weekend rule:
       a worker may go up to weekly_soft_cap = (overage + personal_weekly_cap).
       Given 6/12h shifts, realizable totals are multiples of 6;
     * Over any rolling K-week window (aligned, default K=4), the total must be ≤ K * personal_weekly_cap.
-- Optional balance constraint: limit max difference in team counts between shifts per team type
-    (e.g., {"ADV": 2, "BAS": 5} ensures ADV teams vary by at most 2, BAS by at most 5).
+- Optional per-shift-type balance constraint: limit max difference in team counts within each
+    shift type (morning, afternoon, night balanced separately).
+    (e.g., {"ADV": 2, "BAS": 8} ensures ADV teams vary by at most 2 among morning shifts,
+    at most 2 among afternoon shifts, and at most 2 among night shifts).
 - Optional team weights: assign different values to team types in the objective
     (e.g., {"ADV": 2} makes ADV teams worth 2x, prioritizing their formation).
 
@@ -53,12 +55,21 @@ if __name__ == "__main__":
     weekly_soft_overage = 2
     rolling_weeks_for_soft = 4
     
-    # Team imbalance constraint (optional):
+    # Per-shift-type imbalance constraint (optional):
     # None or {} = no constraint
-    # {"ADV": 2, "BAS": 5} = ADV teams vary by max 2, BAS by max 5 across shifts
-    # {"ADV": 1} = only constrain ADV, BAS and MOTO unconstrained
-    # Note: MOTO typically not constrained due to weekend/night rules
-    team_imbalance = {"ADV": 3, "BAS": 10}  # Set to a dict to enable, e.g., {"ADV": 2, "BAS": 5}
+    # {"ADV": 2, "BAS": 8} = ADV teams vary by max 2, BAS by max 8 within each shift type
+    # Balancing is done separately for morning, afternoon, and night shifts
+    # This prevents the optimizer from leaving night shifts empty while filling day shifts
+    # Note: MOTO typically not constrained due to weekend/night rules (always 0 at night/weekend)
+    shift_type_imbalance = {"ADV": 2, "BAS": 8}  # Balance teams within each shift type
+    
+    # Team targets (soft floor with penalty):
+    # None or {} = no target floor
+    # {"ADV": 3} = try to get at least 3 ADV teams per shift
+    # The optimizer will prioritize reaching targets before maximizing total coverage
+    # If targets are impossible (e.g., not enough MDs), it falls back gracefully
+    # rather than failing with INFEASIBLE
+    team_targets = {"ADV": 2, "BAS": 15, "MOTO": 5}  # Target at least 3 ADV teams per shift
     
     # Team weights for objective function (optional):
     # None or {} = all teams have weight 1 (equal priority)
@@ -99,9 +110,10 @@ if __name__ == "__main__":
         weekly_soft_overage=weekly_soft_overage,
         rolling_weeks_for_soft=rolling_weeks_for_soft,
         worker_list=demo_workers,
-        max_shift_imbalance=None,
+        shift_type_imbalance=shift_type_imbalance,
+        team_targets=team_targets,
         team_weights=team_weights,
-        time_limit=30.0,
+        time_limit=180.0,
         num_search_workers=12,
     )
     summary = generate_summary(solver,

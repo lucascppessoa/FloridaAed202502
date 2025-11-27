@@ -29,8 +29,10 @@ def solve_max_covered_shifts(
         # Weekly flexibility:
         weekly_soft_overage: int = 2,  # e.g., +10% per week: 44 when cap=40
         rolling_weeks_for_soft: int = 4,  # total over any K aligned weeks <= K * cap (e.g., 160 for K=4)
-        # Balance constraint:
-        max_shift_imbalance: Optional[Dict[str, int]] = None,  # max imbalance per team type (e.g., {"ADV": 2, "BAS": 5})
+        # Balance constraint (per shift type):
+        shift_type_imbalance: Optional[Dict[str, int]] = None,  # max imbalance per team type within each shift type (e.g., {"ADV": 2, "BAS": 8})
+        # Team targets (soft floor with penalty):
+        team_targets: Optional[Dict[str, int]] = None,  # target minimum teams per shift (e.g., {"ADV": 3} = try to get at least 3 ADV per shift)
         # Team weights:
         team_weights: Optional[Dict[str, int]] = None,  # weight per team type in objective (e.g., {"ADV": 2, "BAS": 1, "MOTO": 1})
         # Solve options:
@@ -49,8 +51,17 @@ def solve_max_covered_shifts(
       teams_per_night_shift: team counts for night shifts (default fixed EMS mix).
       weekly_soft_overage: per-week overage allowed (e.g., 2 allows 42 when cap=40).
       rolling_weeks_for_soft: rolling aligned K-week window cap K * personal_weekly_cap.
-      max_shift_imbalance: dict mapping team type to max allowed difference in team count between shifts
-                           (e.g., {"ADV": 2, "BAS": 5}). Missing keys or None values disable constraint for that type.
+      shift_type_imbalance: dict mapping team type to max allowed difference in team count 
+                            within each shift type (morning, afternoon, night separately).
+                            E.g., {"ADV": 2, "BAS": 8} means ADV teams vary by max 2 among all 
+                            morning shifts, max 2 among all afternoon shifts, max 2 among all 
+                            night shifts (each balanced independently).
+                            Missing keys or None values disable constraint for that type.
+      team_targets: dict mapping team type to target minimum teams per shift (soft floor).
+                    E.g., {"ADV": 3} means try to get at least 3 ADV teams per shift.
+                    Uses a penalty in the objective to prioritize reaching targets before
+                    maximizing total coverage. Falls back gracefully if target is impossible.
+                    Missing keys or None values disable target for that type.
       team_weights: dict mapping team type to weight in objective function (e.g., {"ADV": 2, "BAS": 1, "MOTO": 1}).
                     Missing keys default to weight 1. Higher weight = higher priority in optimization.
       time_limit: CP-SAT time limit in seconds.
@@ -206,12 +217,35 @@ def solve_max_covered_shifts(
                 >= total_teams_required * c_s
             )
 
-    # Balance constraint: limit difference in team counts between shifts (per team type)
-    if max_shift_imbalance is not None:
+    # Soft floor with penalty: create shortfall variables for team targets
+    # Shortfall measures how much below target each shift is for each team type
+    shortfall = {}  # (shift, team_type) -> IntVar: shortfall from target
+    if team_targets is not None:
+        for team_type in ["ADV", "BAS", "MOTO"]:
+            if team_type in team_targets and team_targets[team_type] is not None:
+                target = team_targets[team_type]
+                for shift in range(shifts):
+                    # Shortfall = max(0, target - teams_formed)
+                    # Domain is [0, target] since we can't be more than target below
+                    shortfall[(shift, team_type)] = model.NewIntVar(0, target, f"shortfall_{shift}_{team_type}")
+                    # shortfall >= target - teams_formed (captures the gap)
+                    model.Add(shortfall[(shift, team_type)] >= target - teams_formed[(shift, team_type)])
+
+    # Per-shift-type balance constraint: limit difference in team counts within each shift type
+    # (morning, afternoon, night balanced separately)
+    if shift_type_imbalance is not None:
+        # Group shifts by type: 0=morning, 1=afternoon, 2=night
+        shift_type_names = ["morning", "afternoon", "night"]
+        shifts_by_type = {
+            0: [s for s in range(shifts) if s % 3 == 0],  # morning shifts
+            1: [s for s in range(shifts) if s % 3 == 1],  # afternoon shifts
+            2: [s for s in range(shifts) if s % 3 == 2],  # night shifts
+        }
+        
         for team_type in ["ADV", "BAS", "MOTO"]:
             # Only enforce if this team type is in the dict and has a non-None value
-            if team_type in max_shift_imbalance and max_shift_imbalance[team_type] is not None:
-                imbalance_limit = max_shift_imbalance[team_type]
+            if team_type in shift_type_imbalance and shift_type_imbalance[team_type] is not None:
+                imbalance_limit = shift_type_imbalance[team_type]
                 
                 # Calculate supply limit (max possible teams of this type in any shift)
                 team_supply_limit = max(
@@ -219,19 +253,26 @@ def solve_max_covered_shifts(
                     teams_per_night_shift.get(team_type, 0)
                 )
                 
-                # Collect teams formed of this type across all shifts
-                teams_by_shift = [teams_formed[(shift, team_type)] for shift in range(shifts)]
-                
-                # Create min and max variables for this team type (domain is [0, supply_limit])
-                min_teams = model.NewIntVar(0, team_supply_limit, f"min_teams_{team_type}")
-                max_teams = model.NewIntVar(0, team_supply_limit, f"max_teams_{team_type}")
-                
-                # Constrain min and max to actual values across shifts
-                model.AddMinEquality(min_teams, teams_by_shift)
-                model.AddMaxEquality(max_teams, teams_by_shift)
-                
-                # Enforce balance constraint for this team type
-                model.Add(max_teams - min_teams <= imbalance_limit)
+                # Create balance constraints for each shift type separately
+                for shift_type_idx, shift_list in shifts_by_type.items():
+                    if len(shift_list) < 2:
+                        continue  # No balancing needed for single shift
+                    
+                    shift_type_name = shift_type_names[shift_type_idx]
+                    
+                    # Collect teams formed of this type for this shift type only
+                    teams_in_shift_type = [teams_formed[(s, team_type)] for s in shift_list]
+                    
+                    # Create min and max variables for this team type within this shift type
+                    min_teams = model.NewIntVar(0, team_supply_limit, f"min_teams_{team_type}_{shift_type_name}")
+                    max_teams = model.NewIntVar(0, team_supply_limit, f"max_teams_{team_type}_{shift_type_name}")
+                    
+                    # Constrain min and max to actual values within this shift type
+                    model.AddMinEquality(min_teams, teams_in_shift_type)
+                    model.AddMaxEquality(max_teams, teams_in_shift_type)
+                    
+                    # Enforce balance constraint for this team type within this shift type
+                    model.Add(max_teams - min_teams <= imbalance_limit)
 
     # Objective: maximize total number of team slots covered across all shifts
     total_positions_demand = sum(
@@ -252,6 +293,26 @@ def solve_max_covered_shifts(
         for team_type in ["ADV", "BAS", "MOTO"]
     )
     
+    # Calculate total shortfall penalty (if team_targets is set)
+    # The penalty weight must be large enough that reducing shortfall by 1 is always
+    # better than gaining extra teams elsewhere
+    total_shortfall = 0
+    shortfall_penalty_weight = 0
+    if team_targets is not None and shortfall:
+        # Calculate max possible weighted teams in a single shift
+        max_weighted_teams_per_shift = sum(
+            weights[team_type] * max(teams_per_day_shift.get(team_type, 0), teams_per_night_shift.get(team_type, 0))
+            for team_type in ["ADV", "BAS", "MOTO"]
+        )
+        # Penalty weight: reducing shortfall by 1 must be worth more than all teams in all shifts
+        # This ensures targets are prioritized before maximizing total coverage
+        shortfall_penalty_weight = shifts * max_weighted_teams_per_shift + 1
+        
+        total_shortfall = sum(
+            shortfall[(s, t)] 
+            for (s, t) in shortfall.keys()
+        )
+    
     if use_tiebreak_fill_positions:
         # Tie-break: prefer more balanced coverage (maximize fully covered shifts as secondary)
         # big_W must be larger than max possible weighted team count to ensure tie-break doesn't affect primary objective
@@ -260,12 +321,31 @@ def solve_max_covered_shifts(
             for team_type in ["ADV", "BAS", "MOTO"]
         )
         big_W = shifts * max_weighted_teams_per_shift + 1
-        model.Maximize(
-            total_teams_covered * big_W +
-            sum(full_coverage[shift] for shift in range(shifts))
-        )
+        
+        # Objective hierarchy:
+        # 1. Minimize shortfall (highest priority via large penalty weight)
+        # 2. Maximize teams covered (primary objective)
+        # 3. Maximize fully covered shifts (tie-breaker)
+        if shortfall_penalty_weight > 0:
+            # With targets: prioritize reaching targets, then maximize coverage
+            model.Maximize(
+                -total_shortfall * shortfall_penalty_weight * big_W +
+                total_teams_covered * big_W +
+                sum(full_coverage[shift] for shift in range(shifts))
+            )
+        else:
+            model.Maximize(
+                total_teams_covered * big_W +
+                sum(full_coverage[shift] for shift in range(shifts))
+            )
     else:
-        model.Maximize(total_teams_covered)
+        if shortfall_penalty_weight > 0:
+            model.Maximize(
+                -total_shortfall * shortfall_penalty_weight +
+                total_teams_covered
+            )
+        else:
+            model.Maximize(total_teams_covered)
 
     # Solve
     solver = cp_model.CpSolver()
